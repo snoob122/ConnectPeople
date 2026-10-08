@@ -6,7 +6,7 @@ const submitBtn = document.getElementById("submitBtn");
 
 const statusTag = document.getElementById("statusTag");
 const pathTag = document.getElementById("pathTag");
-const debugField = document.getElementById("debugField");
+const logField = document.getElementById("logField");
 
 // URI Variables
 const BASE_URL = "https://en.wikipedia.org/w/api.php";
@@ -41,6 +41,32 @@ function buildURIFilter(titles){
     return uri;
 }
 
+async function fetchWithRetry(url, maxRetries = 3, initialDelay = 1000) {
+    let delay = initialDelay;
+    
+    for (let i = 0; i < maxRetries; i++) {
+        const response = await fetch(url);
+        
+        // If successful, parse and return the JSON
+        if (response.ok) {
+            return response.json();
+        }
+        
+        // If rate limited, wait and try again
+        if (response.status === 429) {
+            console.warn(`Rate limit hit (429). Retrying in ${delay}ms...`);
+            await sleep(delay);
+            delay *= 2; // Double the wait time on each subsequent failure
+            continue;
+        }
+        
+        // Throw any other unhandled HTTP errors
+        throw new Error(`HTTP Error: ${response.status}`);
+    }
+    
+    throw new Error("Max retries reached due to rate limiting.");
+}
+
 async function fetchTitle(URI){
 
     let titleArr = [];
@@ -48,30 +74,33 @@ async function fetchTitle(URI){
     let hasMore = true;
 
     while (hasMore){
-        const response = await fetch(currentURI);
-        const dataStart = await response.json();
+        try{
+            const dataStart = await fetchWithRetry(currentURI);
 
-        if (!dataStart.query || !dataStart.query.pages){
-            return titleArr;
-        }
-    
-        const pages = dataStart.query.pages;
-        const pageData = Object.values(pages)[0];
-    
-        if (pageData.links) {
-            const rawTitle = pageData.links;
-        
-            for (let i = 0; i < rawTitle.length; i++){
-                titleArr.push(rawTitle[i].title);
+            if (!dataStart.query || !dataStart.query.pages){
+                return titleArr;
             }
-        }
+        
+            const pages = dataStart.query.pages;
+            const pageData = Object.values(pages)[0];
+        
+            if (pageData.links) {
+                const rawTitle = pageData.links;
+            
+                for (let i = 0; i < rawTitle.length; i++){
+                    titleArr.push(rawTitle[i].title);
+                }
+            }
 
-        if (dataStart.continue && dataStart.continue.plcontinue){
-            currentURI = `${URI}&plcontinue=${encodeURIComponent(dataStart.continue.plcontinue)}`;
-        }else{
-            hasMore = false;
+            if (dataStart.continue && dataStart.continue.plcontinue){
+                currentURI = `${URI}&plcontinue=${encodeURIComponent(dataStart.continue.plcontinue)}`;
+            }else{
+                hasMore = false;
+            }
+        } catch (error){
+            console.error("Error fetching title links:", error);
+            break;
         }
-    
     }
 
     return titleArr;
@@ -80,19 +109,39 @@ async function fetchTitle(URI){
 // Must do preprocessing before passing patch in
 async function filterHumans(humanArr){
     const humanTitles = [];
-
-    for (let iter = 0; iter < humanArr.length; iter+=50){
-        const batch = humanArr.slice(iter, iter+50).join('|');
     
-        try{
-            const response = await fetch(buildURIFilter(batch));
-            const json = await response.json();
+    // Set how many batch requests can run simultaneously
+    const CONCURRENCY_LIMIT = 3; 
 
-            if (!json.query || !json.query.pages) continue;
+    for (let iter = 0; iter < humanArr.length; iter += (50 * CONCURRENCY_LIMIT)){
+        const batchPromises = [];
 
-            const pageData = json.query.pages;
-            const pageDataArr = Object.values(pageData);
-        
+        for (let i = 0; i < CONCURRENCY_LIMIT; i++) {
+            const startIndex = iter + (i * 50);
+            if (startIndex >= humanArr.length) break;
+
+            const batch = humanArr.slice(startIndex, startIndex + 50).join('|');
+            const uri = buildURIFilter(batch);
+
+            batchPromises.push(
+                fetchWithRetry(uri).catch(error => {
+                    console.error("Batch fetch error:", error);
+                    return null; 
+                })
+            );
+        }
+
+        // Await this specific chunk of 5 requests
+        const results = await Promise.all(batchPromises);
+
+        // Process the JSON payloads synchronously
+        for (let k = 0; k < results.length; k++){
+            const json = results[k];
+
+            if (!json || !json.query || !json.query.pages) continue;
+
+            const pageDataArr = Object.values(json.query.pages);
+            
             for (let i = 0; i < pageDataArr.length; i++){
                 const page = pageDataArr[i];
         
@@ -107,7 +156,7 @@ async function filterHumans(humanArr){
                         /Category:\d{4} births/.test(categoryTitle) || 
                         /Category:\d{4} deaths/.test(categoryTitle)) {
                         isHuman = true;
-                        break; // Stop checking further categories for this page
+                        break; 
                     }
                 }
         
@@ -115,11 +164,12 @@ async function filterHumans(humanArr){
                     humanTitles.push(page.title);
                 }
             }
-        }catch (error){
-            console.log("Error while filtering:", error);
         }
+        
+        // Pause execution before firing the next chunk of 3 requests
+        await sleep(200);
     }
-
+    
     return humanTitles;
 }
 
@@ -136,7 +186,7 @@ async function bfsShortestPath(start, end){
 
         const curNode = curPath[curPath.length - 1];
 
-        console.log(`Exploring Node: ${curNode}`);
+        logField.innerHTML = `Log: Exploring Node: ${curNode}`;
 
         const linksData = await fetchTitle(buildURI(curNode));
         requestMade++;
@@ -177,13 +227,11 @@ submitBtn.addEventListener("click", async () => {
         // Get End Time
         const endTime = performance.now();
 
-        pathTag.innerText = `${JSON.stringify(result)}`;
-        statusTag.innerHTML = `Success! Path built in ${((endTime - startTime) / 1000).toFixed(2)}`
+        pathTag.innerText = `Path: ${JSON.stringify(result)}`;
+        statusTag.innerHTML = `Status: Success! Path built in ${((endTime - startTime) / 1000).toFixed(2)}`
     }catch(error){
         console.log("Error:", error);
-        pathTag.innerHTML = `[]`;
-        statusTag.innerHTML = `Failed!`;
+        pathTag.innerHTML = `Path: []`;
+        statusTag.innerHTML = `Status: Failed!`;
     }
-
-
 });
