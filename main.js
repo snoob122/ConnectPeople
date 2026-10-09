@@ -14,6 +14,13 @@ const BASE_ACTION = "query";
 const BASE_FORMAT = "json";
 const BASE_ORIGIN = "*";
 
+const NON_HUMAN_REGEX = /\b(album|song|film|band|soundtrack|season|discography|tour|awards?|records?|university|county|school|dynasty|battle|treaty|elections?|presidency|administration|cabinet|politics|history|geography|discography|videography|list of)\b|\d{4}|^\d+$|\(.*(album|film|song|single|band|soundtrack|season|episode|TV series|novel|EP|company|record label|musical).*\)$/i;
+
+function couldBeHuman(title) {
+    if (!title || typeof title !== "string") return false;
+    return !NON_HUMAN_REGEX.test(title);
+}
+
 async function fetchWithRetry(url, maxRetries = 6, initialDelay = 2000) {
     let delay = initialDelay;
     
@@ -145,6 +152,62 @@ async function fetchRawBackwardLinks(title) {
     return links;
 }
 
+async function asyncPool(limit, items, iteratorFn) {
+    const results = [];
+    const executing = new Set();
+
+    for (const item of items) {
+        const p = Promise.resolve().then(() => iteratorFn(item));
+        results.push(p);
+        executing.add(p);
+
+        const clean = () => executing.delete(p);
+        p.then(clean, clean);
+
+        if (executing.size >= limit) {
+            await Promise.race(executing);
+        }
+    }
+
+    return Promise.all(results);
+}
+
+// Bulk verifies up to 50 nodes in 1 HTTP call
+async function verifyHumansBulk(titles) {
+    const unverified = titles.filter(t => !humanCache.has(t));
+    if (unverified.length === 0) return;
+
+    for (let i = 0; i < unverified.length; i += 50) {
+        const batch = unverified.slice(i, i + 50);
+        const joined = batch.map(encodeURIComponent).join('|');
+        const uri = `${BASE_URL}?action=${BASE_ACTION}&titles=${joined}&prop=categories&cllimit=500&format=${BASE_FORMAT}&origin=${BASE_ORIGIN}&redirects=1`;
+
+        try {
+            const data = await fetchWithRetry(uri);
+            if (!data.query || !data.query.pages) continue;
+
+            const pages = Object.values(data.query.pages);
+            for (const page of pages) {
+                let isHuman = false;
+                if (page.categories) {
+                    for (const cat of page.categories) {
+                        const title = cat.title;
+                        if (title.includes("Category:Living people") || 
+                            /Category:\d{4} births/.test(title) || 
+                            /Category:\d{4} deaths/.test(title)) {
+                            isHuman = true;
+                            break;
+                        }
+                    }
+                }
+                humanCache.set(page.title, isHuman);
+            }
+        } catch (err) {
+            console.error("Bulk validation error:", err);
+        }
+    }
+}
+
 async function bidirectionalBfsShortestPath(start, end) {
     if (start === end) return [start];
 
@@ -159,8 +222,10 @@ async function bidirectionalBfsShortestPath(start, end) {
     const forwardVisited = new Map([[start, [start]]]);
     const backwardVisited = new Map([[end, [end]]]);
 
-    let maxAPIRequests = 200;
+    let maxAPIRequests = 2000;
     let requestMade = 0;
+
+    const CONCURRENCY_LIMIT = 2;
 
     while (forwardFrontier.size > 0 && backwardFrontier.size > 0 && requestMade < maxAPIRequests) {
         // Expand the smaller frontier first to control branching factor
@@ -168,42 +233,66 @@ async function bidirectionalBfsShortestPath(start, end) {
         const currentFrontier = expandForward ? forwardFrontier : backwardFrontier;
         const nextFrontier = new Map();
 
-        for (const [curNode, curPath] of currentFrontier) {
-            if (requestMade >= maxAPIRequests) break;
+        // 1. Gather nodes needing validation
+        const nodesToValidate = Array.from(currentFrontier.keys())
+            .filter(node => node !== start && node !== end && !humanCache.has(node));
 
-            // LAZY VALIDATION: Verify humanity only when dequeuing for expansion
-            if (curNode !== start && curNode !== end) {
-                const isHuman = await verifyIsHuman(curNode);
-                requestMade++;
-                if (!isHuman) {
-                    continue; // Skip expanding non-human entities
-                }
-            }
+        const validationBatches = [];
+        for (let i = 0; i < nodesToValidate.length; i += 50) {
+            validationBatches.push(nodesToValidate.slice(i, i + 50));
+        }
+
+        // Parallelize bulk verification
+        await asyncPool(CONCURRENCY_LIMIT, validationBatches, async (batch) => {
+            if (requestMade >= maxAPIRequests) return;
+            await verifyHumansBulk(batch);
+            requestMade++;
+        });
+
+        // 2. Filter candidates down to verified humans
+        const validCandidates = Array.from(currentFrontier.entries()).filter(([curNode]) => {
+            if (curNode === start || curNode === end) return true;
+            return humanCache.get(curNode) === true;
+        });
+
+        let earlyReturnPath = null;
+
+        // 3. Expand valid frontier nodes concurrently
+        await asyncPool(CONCURRENCY_LIMIT, validCandidates, async ([curNode, curPath]) => {
+            if (requestMade >= maxAPIRequests || earlyReturnPath) return;
 
             logField.innerHTML = `Log: Expanding: ${curNode} (${expandForward ? "Forward" : "Backward"})`;
 
-            // Retrieve raw outgoing or incoming connections
             const rawNeighbors = expandForward 
                 ? await fetchRawForwardLinks(curNode) 
                 : await fetchRawBackwardLinks(curNode);
             requestMade++;
 
             for (let i = 0; i < rawNeighbors.length; i++) {
+                if (earlyReturnPath) break;
                 const neighbor = rawNeighbors[i];
+
+                if (!couldBeHuman(neighbor) && neighbor !== start && neighbor !== end) {
+                    continue;
+                }
+
                 const opposingVisited = expandForward ? backwardVisited : forwardVisited;
 
                 // Intersection detected
                 if (opposingVisited.has(neighbor)) {
-                    // Validate bridge node before confirming path
-                    const bridgeIsHuman = await verifyIsHuman(neighbor);
-                    requestMade++;
+                    let bridgeIsHuman = humanCache.get(neighbor);
+                    if (bridgeIsHuman === undefined) {
+                        bridgeIsHuman = await verifyIsHuman(neighbor);
+                        requestMade++;
+                    }
 
                     if (bridgeIsHuman) {
                         const pathStart = expandForward ? [...curPath, neighbor] : opposingVisited.get(neighbor);
                         const pathEnd = expandForward ? opposingVisited.get(neighbor) : [...curPath, neighbor];
 
                         const reversedEnd = [...pathEnd].reverse().slice(1);
-                        return [...pathStart, ...reversedEnd];
+                        earlyReturnPath = [...pathStart, ...reversedEnd];
+                        return;
                     }
                 }
 
@@ -214,8 +303,10 @@ async function bidirectionalBfsShortestPath(start, end) {
                     nextFrontier.set(neighbor, nextPath);
                 }
             }
+        });
 
-            await sleep(50);
+        if (earlyReturnPath) {
+            return earlyReturnPath;
         }
 
         if (expandForward) {
@@ -226,6 +317,23 @@ async function bidirectionalBfsShortestPath(start, end) {
     }
 
     return "Path not found or request limit reached.";
+}
+
+function formatResult(resultJSON){
+    console.log(resultJSON);
+    const resultArr = Object.values(resultJSON);
+
+    if (resultArr.length == 0){
+        return ``;
+    }
+
+    let formattedResult = `${resultArr[0]}`;
+
+    for (let i = 1; i < resultArr.length; i++){
+        formattedResult += ` -> ${resultArr[i]}`;
+    }
+
+    return formattedResult;
 }
 
 submitBtn.addEventListener("click", async () => {
@@ -241,7 +349,11 @@ submitBtn.addEventListener("click", async () => {
         const result = await bidirectionalBfsShortestPath(start, end);
         const endTime = performance.now();
 
-        pathTag.innerText = `Path: ${JSON.stringify(result)}`;
+        if (result == "Path not found or request limit reached."){
+            throw new Error(result);
+        }
+
+        pathTag.innerText = `Path: ${formatResult(result)}`;
         statusTag.innerHTML = `Status: Success! Path built in ${((endTime - startTime) / 1000).toFixed(2)}s`;
     } catch (error) {
         console.error("Execution error:", error);
