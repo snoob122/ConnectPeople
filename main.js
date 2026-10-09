@@ -113,7 +113,7 @@ async function filterHumans(humanArr){
     const humanTitles = [];
     
     // Set how many batch requests can run simultaneously
-    const CONCURRENCY_LIMIT = 2; 
+    const CONCURRENCY_LIMIT = 3; 
 
     for (let iter = 0; iter < humanArr.length; iter += (50 * CONCURRENCY_LIMIT)){
         const batchPromises = [];
@@ -133,7 +133,6 @@ async function filterHumans(humanArr){
             );
         }
 
-        // Await this specific chunk of 5 requests
         const results = await Promise.all(batchPromises);
 
         // Process the JSON payloads synchronously
@@ -175,40 +174,115 @@ async function filterHumans(humanArr){
     return humanTitles;
 }
 
-async function bfsShortestPath(start, end){
-    const queue = [[start]];
-    const visited = new Set();
-    visited.add(start);
+// Build URI to find pages linking INTO the target (inbound edges)
+function buildURIInbound(titles) {
+    if (typeof(titles) !== "string") return "Invalid titles!";
+    titles = encodeURIComponent(titles);
+
+    // prop=linkshere returns pages linking to this page (namespace 0 = articles only)
+    return `${BASE_URL}?action=${BASE_ACTION}&titles=${titles}&prop=linkshere&lhlimit=500&lhnamespace=0&format=${BASE_FORMAT}&origin=${BASE_ORIGIN}&redirects=1`;
+}
+
+async function fetchInboundTitle(URI) {
+    let titleArr = [];
+    let currentURI = URI;
+    let hasMore = true;
+
+    while (hasMore) {
+        try {
+            const data = await fetchWithRetry(currentURI);
+            if (!data.query || !data.query.pages) return titleArr;
+
+            const pages = data.query.pages;
+            const pageData = Object.values(pages)[0];
+
+            if (pageData.linkshere) {
+                for (let i = 0; i < pageData.linkshere.length; i++) {
+                    titleArr.push(pageData.linkshere[i].title);
+                }
+            }
+
+            if (data.continue && data.continue.lhcontinue) {
+                currentURI = `${URI}&lhcontinue=${encodeURIComponent(data.continue.lhcontinue)}`;
+                await sleep(200);
+            } else {
+                hasMore = false;
+            }
+        } catch (error) {
+            console.error("Error fetching inbound title links:", error);
+            break;
+        }
+    }
+    return titleArr;
+}
+
+async function bidirectionalBfsShortestPath(start, end) {
+    if (start === end) return [start];
+
+    // Queue stores: [path, isFromStart]
+    // isFromStart = true  -> forward search from start
+    // isFromStart = false -> backward search from end
+    const queue = [
+        [[start], true],
+        [[end], false]
+    ];
+
+    // visited map: key = title, value = { isFromStart: boolean, path: string[] }
+    const visited = new Map();
+    visited.set(start, { isFromStart: true, path: [start] });
+    visited.set(end, { isFromStart: false, path: [end] });
 
     let maxAPIRequests = 150;
     let requestMade = 0;
 
-    while (queue.length > 0 && requestMade < maxAPIRequests){
-        const curPath = queue.shift();
-
+    while (queue.length > 0 && requestMade < maxAPIRequests) {
+        const [curPath, isFromStart] = queue.shift();
         const curNode = curPath[curPath.length - 1];
 
-        logField.innerHTML = `Log: Exploring Node: ${curNode}`;
+        logField.innerHTML = `Log: Exploring Node: ${curNode} (${isFromStart ? "Forward" : "Backward"})`;
 
-        const linksData = await fetchTitle(buildURI(curNode));
+        // Forward search uses links; Backward search uses linkshere
+        const uri = isFromStart ? buildURI(curNode) : buildURIInbound(curNode);
+        const linksData = isFromStart 
+            ? await fetchTitle(uri) 
+            : await fetchInboundTitle(uri);
         requestMade++;
 
         const humanNeighbors = await filterHumans(linksData);
 
-        for (let i = 0; i < humanNeighbors.length; i++){
+        for (let i = 0; i < humanNeighbors.length; i++) {
             const neighbor = humanNeighbors[i];
 
-            if (neighbor === end) {
-                return [...curPath, neighbor];
+            if (visited.has(neighbor)) {
+                const prev = visited.get(neighbor);
+
+                // Collision detected between opposing frontiers
+                if (prev.isFromStart !== isFromStart) {
+                    const startBranch = isFromStart ? curPath : prev.path;
+                    const endBranch = isFromStart ? prev.path : curPath;
+
+                    // If forward frontier hit a node in endBranch: neighbor is already in endBranch.
+                    // If backward frontier hit a node in startBranch: neighbor is in startBranch.
+                    // We locate the collision node and stitch the full start -> end path.
+                    const meetingIndex = endBranch.lastIndexOf(neighbor);
+                    const backwardReversed = endBranch.slice(0, meetingIndex + 1).reverse();
+
+                    // Splicing: startBranch ends at neighbor (or curPath), backwardReversed continues to end
+                    if (isFromStart) {
+                        return [...curPath, ...backwardReversed];
+                    } else {
+                        return [...startBranch, ...curPath.slice(0, -1).reverse()];
+                    }
+                }
+                continue;
             }
 
-            if (!visited.has(neighbor)) {
-                visited.add(neighbor);
-                queue.push([...curPath, neighbor]);
-            }
+            const nextPath = [...curPath, neighbor];
+            visited.set(neighbor, { isFromStart, path: nextPath });
+            queue.push([nextPath, isFromStart]);
         }
 
-        await sleep(500); 
+        await sleep(500);
     }
 
     return "Path not found or request limit reached.";
@@ -224,7 +298,7 @@ submitBtn.addEventListener("click", async () => {
     console.log(buildURI(start));
 
     try{
-        const result = await bfsShortestPath(start, end);
+        const result = await bidirectionalBfsShortestPath(start, end);
 
         // Get End Time
         const endTime = performance.now();
