@@ -41,7 +41,7 @@ function buildURIFilter(titles){
     return uri;
 }
 
-async function fetchWithRetry(url, maxRetries = 3, initialDelay = 1000) {
+async function fetchWithRetry(url, maxRetries = 6, initialDelay = 2000) {
     let delay = initialDelay;
     
     for (let i = 0; i < maxRetries; i++) {
@@ -94,6 +94,8 @@ async function fetchTitle(URI){
 
             if (dataStart.continue && dataStart.continue.plcontinue){
                 currentURI = `${URI}&plcontinue=${encodeURIComponent(dataStart.continue.plcontinue)}`;
+
+                await sleep(200);
             }else{
                 hasMore = false;
             }
@@ -111,7 +113,7 @@ async function filterHumans(humanArr){
     const humanTitles = [];
     
     // Set how many batch requests can run simultaneously
-    const CONCURRENCY_LIMIT = 3; 
+    const CONCURRENCY_LIMIT = 2; 
 
     for (let iter = 0; iter < humanArr.length; iter += (50 * CONCURRENCY_LIMIT)){
         const batchPromises = [];
@@ -206,7 +208,7 @@ async function bfsShortestPath(start, end){
             }
         }
 
-        await sleep(200); 
+        await sleep(500); 
     }
 
     return "Path not found or request limit reached.";
