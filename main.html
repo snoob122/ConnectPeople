@@ -3,22 +3,39 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ConnectPeople</title>
-
+    <title>Connect People</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div id="mainInput">
-        <input id="startNode" placeholder="Name">
-        <input id="endNode" placeholder="Name">
+    <div id="glowDiv" class="follower"></div>
+    <div id="dot-grid"></div>
+
+    <header id="headerContainer">
+        <h1 id="mainTitle">Connect People</h1>
+        <p id="subTitle">Find the shortest connection between any two people</p>
+    </header>
+
+    <div id="searchCard">
+        <input id="startNode" class="inputTag" type="text" placeholder="Start Person (e.g., Beyonce)" autocomplete="off">
+        <img id="exchangeIcon" src="/Resources/two-arrows-white.png" alt="Arrows">
+        <input id="endNode" class="inputTag" type="text" placeholder="Target Person (e.g., Trump)" autocomplete="off">
         <button id="submitBtn">Connect</button>
     </div>
-    <div id="stateBlock">
-        <div id="statusTag">Status:</div>
-        <div id="pathTag">Path:</div>
-        <div id="logField">Log:</div>
+
+    <div id="stateContainer">
+        <div id="statusBlock">
+            <span id="statusTag" class="stateTag">Status: <strong>Ready</strong></span>
+            <span id="timeTag" class="stateTag">Elapsed Time: <strong>0.00s</strong></span>
+            <span id="requestTag" class="stateTag">Requests Made: <strong>0</strong></span>
+        </div>
+        <div id="logField">Log: Idle</div>
     </div>
 
+    <!-- Output container for rendered cards -->
+    <div id="pathDisplay"></div>
+
+
+    <a href="https://github.com/snoob122/ConnectPeople" id="love">Made by beanDaDev</a>
     <script src="main.js"></script>
 </body>
 </html>

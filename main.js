@@ -1,3 +1,5 @@
+console.log("Hello there! What you doing here?");
+
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const startNode = document.getElementById("startNode");
@@ -5,8 +7,11 @@ const endNode = document.getElementById("endNode");
 const submitBtn = document.getElementById("submitBtn");
 
 const statusTag = document.getElementById("statusTag");
-const pathTag = document.getElementById("pathTag");
 const logField = document.getElementById("logField");
+const timeTag = document.getElementById("timeTag");
+const requestTag = document.getElementById("requestTag");
+
+const container = document.getElementById("pathDisplay");
 
 // MediaWiki API Constants
 const BASE_URL = "https://en.wikipedia.org/w/api.php";
@@ -26,6 +31,7 @@ async function fetchWithRetry(url, maxRetries = 6, initialDelay = 2000) {
     
     for (let i = 0; i < maxRetries; i++) {
         const response = await fetch(url);
+        incRequestCounter();
         
         if (response.ok) {
             return response.json();
@@ -42,6 +48,24 @@ async function fetchWithRetry(url, maxRetries = 6, initialDelay = 2000) {
     }
     
     throw new Error("Max retries reached due to rate limiting.");
+}
+
+let globalRequestCounter = 0;
+
+function incRequestCounter(){
+    globalRequestCounter++;
+
+    requestTag.innerHTML = `Requests Made: <strong>${globalRequestCounter}</strong>`;
+}
+
+function resetRequestCounter(){
+    globalRequestCounter = -1;
+
+    incRequestCounter();
+}
+
+function setStatus(status){
+    statusTag.innerHTML = `Status: <strong>${status}</strong>`;
 }
 
 // Global cache for verified human entities
@@ -88,7 +112,7 @@ async function verifyIsHuman(title) {
     }
 }
 
-// Fetch ALL raw outgoing links with full pagination (no filtering)
+// Fetch ALL raw outgoing links with full pagination (no filtering) - allowing for lazy verification
 async function fetchRawForwardLinks(title) {
     const enc = encodeURIComponent(title);
     let uri = `${BASE_URL}?action=${BASE_ACTION}&titles=${enc}&prop=links&pllimit=500&plnamespace=0&format=${BASE_FORMAT}&origin=${BASE_ORIGIN}&redirects=1`;
@@ -316,7 +340,11 @@ async function bidirectionalBfsShortestPath(start, end) {
         }
     }
 
-    return "Path not found or request limit reached.";
+    if (requestMade >= maxAPIRequests){
+        return "Request Limit Reached!";
+    }else{
+        return "Path Not Found!";
+    }
 }
 
 function formatResult(resultJSON){
@@ -336,28 +364,145 @@ function formatResult(resultJSON){
     return formattedResult;
 }
 
+function clearCard(){
+    container.replaceChildren();
+}
+
 submitBtn.addEventListener("click", async () => {
-    pathTag.innerText = "Path: Finding...";
-    statusTag.innerHTML = "Status: Finding...";
-
+    clearCard();
+    setStatus("Finding");
+    resetRequestCounter();
+    
     const startTime = performance.now();
-
+    
     const start = startNode.value.trim();
     const end = endNode.value.trim();
 
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = `<span class="spinner"></span>`;
+
+    statusTag.innerHTML = `Status: <strong>Searching...</strong>`;
+    logField.innerHTML = `Log: Initializing...`;
+
+    const timerInterval = setInterval(() => {
+        const elapsed = (performance.now() - startTime) / 1000;
+        timeTag.innerHTML = `Elapsed Time: <strong>${elapsed.toFixed(2)}s</strong>`;
+    }, 50);
+    
     try {
+
+        const isValidStart = await verifyIsHuman(start);
+        const isValidEnd = await verifyIsHuman(end);
+
+        if (!isValidStart || !isValidEnd){
+            setStatus(`Failed! Provided names are not available!`);
+            throw new Error("Provided names do not exist!");
+        }
+
         const result = await bidirectionalBfsShortestPath(start, end);
-        const endTime = performance.now();
 
         if (result == "Path not found or request limit reached."){
             throw new Error(result);
         }
+        renderPathCards(result);
 
-        pathTag.innerText = `Path: ${formatResult(result)}`;
-        statusTag.innerHTML = `Status: Success! Path built in ${((endTime - startTime) / 1000).toFixed(2)}s`;
+        setStatus(`Success!`);
     } catch (error) {
         console.error("Execution error:", error);
-        pathTag.innerHTML = `Path: []`;
-        statusTag.innerHTML = `Status: Failed!`;
+        setStatus(`Failed! ${error}`);
+    } finally{
+        clearInterval(timerInterval);
+        const finalElapsed = ((performance.now() - startTime) / 1000).toFixed(2);
+        timeTag.innerHTML = `Elapsed Time: <strong>${finalElapsed}s</strong>`;
+        
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = `Connect`;
     }
+
+    logField.innerHTML = `Log: Idle`;
+});
+
+async function renderPathCards(pathArray) {
+    const container = document.getElementById("pathDisplay");
+    container.innerHTML = "";
+
+    const DEFAULT_AVATAR = "https://upload.wikimedia.org/wikipedia/commons/7/7c/Profile_avatar_placeholder_large.png";
+
+    // Batch-query all thumbnails in one single request
+    const titlesParam = pathArray.map(encodeURIComponent).join("|");
+    const uri = `https://en.wikipedia.org/w/api.php?action=query&titles=${titlesParam}&prop=pageimages&pithumbsize=300&format=json&origin=*&redirects=1`;
+
+    const thumbnailMap = new Map();
+
+    try {
+        const res = await fetch(uri);
+        const data = await res.json();
+
+        if (data.query && data.query.pages) {
+            const pages = Object.values(data.query.pages);
+            for (const p of pages) {
+                if (p.thumbnail && p.thumbnail.source) {
+                    thumbnailMap.set(p.title.toLowerCase(), p.thumbnail.source);
+                }
+            }
+
+            // Map normalized and redirect aliases
+            if (data.query.normalized) {
+                for (const norm of data.query.normalized) {
+                    const src = thumbnailMap.get(norm.to.toLowerCase());
+                    if (src) thumbnailMap.set(norm.from.toLowerCase(), src);
+                }
+            }
+            if (data.query.redirects) {
+                for (const red of data.query.redirects) {
+                    const src = thumbnailMap.get(red.to.toLowerCase());
+                    if (src) thumbnailMap.set(red.from.toLowerCase(), src);
+                }
+            }
+        }
+    } catch (e) {
+        console.error("Failed to batch-fetch thumbnails:", e);
+    }
+
+    // Render cards
+    for (let i = 0; i < pathArray.length; i++) {
+        const title = pathArray[i];
+        const imgUrl = thumbnailMap.get(title.toLowerCase()) || DEFAULT_AVATAR;
+        const wikiUrl = `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/\s+/g, "_"))}`;
+
+        // Create card as an anchor tag linking to Wikipedia
+        const card = document.createElement("a");
+        card.className = "person-card";
+        card.href = wikiUrl;
+        card.target = "_blank";
+        card.rel = "noopener noreferrer";
+        card.innerHTML = `
+            <img class="person-avatar" src="${imgUrl}" alt="${title}">
+            <div class="person-name">${title}</div>
+        `;
+        container.appendChild(card);
+
+        if (i < pathArray.length - 1) {
+            const arrow = document.createElement("div");
+            arrow.className = "arrow-separator";
+            arrow.innerHTML = "→";
+            container.appendChild(arrow);
+        }
+    }
+}
+
+const follower = document.getElementById("glowDiv");
+
+window.addEventListener('mousemove', (e) => {
+  // Update the element's position using pixel values
+  follower.style.left = e.clientX + 'px';
+  follower.style.top = e.clientY + 'px';
+});
+
+window.addEventListener("mousedown", () => {
+    follower.classList.add("active");
+});
+
+window.addEventListener("mouseup", () => {
+    follower.classList.remove("active");
 });

@@ -1,0 +1,308 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+body {
+    background-color: #0a0d14;
+    background-image: 
+        radial-gradient(circle at top, rgba(21, 28, 45, 0.9) 0%, rgba(10, 13, 20, 0.98) 100%),
+        linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+    background-size: 100% 100%, 36px 36px, 36px 36px;
+    background-position: 0 0, -1px -1px, -1px -1px;
+    color: #f1f5f9;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px;
+}
+
+/* Header */
+#headerContainer {
+    text-align: center;
+    margin-bottom: 32px;
+
+    z-index: 2;
+}
+
+#mainTitle {
+    font-size: 60px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 8px;
+    color: #ffffff;
+}
+
+#subTitle {
+    color: #94a3b8;
+    font-size: 16px;
+    font-weight: 400;
+}
+
+/* Search Bar */
+#searchCard {
+    display: flex;
+    align-items: center;
+    background: rgba(30, 41, 59, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(12px);
+    padding: 8px 12px;
+    border-radius: 14px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.36);
+    gap: 12px;
+    width: 100%;
+    max-width: 680px;
+
+    transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+#searchCard:active{
+    transform: scale(1.02);
+    transition: transform 0.08s cubic-bezier(0.2, 0, 0, 1);
+}
+
+.inputTag {
+    flex: 1;
+    background: #0f172a;
+    border: 1px solid #334155;
+    color: #ffffff;
+    font-size: 15px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.inputTag:focus {
+    border-color: #38bdf8;
+    box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.2);
+}
+
+.inputTag::placeholder {
+    color: #64748b;
+}
+
+#exchangeIcon {
+    width: 20px;
+    height: 16px;
+    opacity: 0.7;
+}
+
+#submitBtn {
+    background: #2563eb;
+    color: #ffffff;
+    border: none;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 12px 24px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+}
+
+#submitBtn:hover {
+    background: #1d4ed8;
+}
+
+#submitBtn:active {
+    transform: scale(0.98);
+}
+
+/* Status & Stats Panel */
+#stateContainer {
+    width: 100%;
+    max-width: 680px;
+    margin-top: 24px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid #1e293b;
+    border-radius: 12px;
+    padding: 16px 20px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+
+    z-index: 2;
+
+    transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+#stateContainer:active{
+    transform: scale(1.02);
+    transition: transform 0.08s cubic-bezier(0.2, 0, 0, 1);
+}
+
+#statusBlock {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #1e293b;
+    padding-bottom: 12px;
+    margin-bottom: 10px;
+    font-size: 14px;
+    color: #94a3b8;
+}
+
+.stateTag strong {
+    color: #f1f5f9;
+}
+
+#statusTag strong {
+    color: #38bdf8;
+}
+
+#logField {
+    font-size: 13px;
+    color: #64748b;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Path Results Container */
+#pathDisplay {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-top: 40px;
+    width: 100%;
+    max-width: 900px;
+
+    z-index: 2;
+}
+
+/* Card Styling for Path Results */
+.person-card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 14px;
+    width: 160px;
+    padding: 16px 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    transition: transform 0.2s, border-color 0.2s;
+}
+
+.person-card:hover {
+    transform: translateY(-3px);
+    border-color: #38bdf8;
+}
+
+.person-avatar {
+    width: 80px;
+    height: 80px;
+    border-radius: 10px;
+    object-fit: cover;
+    margin-bottom: 12px;
+    background: #0f172a;
+    border: 1px solid #334155;
+}
+
+.person-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: #ffffff;
+    margin-bottom: 4px;
+}
+
+.arrow-separator {
+    color: #38bdf8;
+    font-size: 20px;
+    font-weight: bold;
+}
+
+.person-card {
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
+}
+
+#love{
+    font-size: 13px;
+
+    position: absolute;
+    margin-bottom:8px;
+    margin-left:5px;
+    bottom: 0;
+    left: 0;
+
+    color:inherit;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.follower {
+    position: fixed; /* Matches clientX/clientY regardless of page scrolling */
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(1);
+    width: 600px;
+    height: 600px;
+    border-radius: 50%;
+    background: radial-gradient(
+        circle, 
+        rgba(0, 242, 254, 0.3) 0%, 
+        rgba(4, 114, 157, 0.12) 45%, 
+        transparent 70%
+    );
+    filter: blur(60px);
+    pointer-events: none;
+    z-index: 0;
+    user-select: none;
+    
+    /* Only transition scale and filter, NOT left/top (prevents mouse lag) */
+    transition: transform 1s cubic-bezier(0.2, 0.8, 0.2, 1), 
+                filter 1s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.follower.active {
+    transform: translate(-50%, -50%) scale(1.35);
+    filter: blur(60px) brightness(1.5) drop-shadow(0 0 35px rgba(0, 242, 254, 0.8));
+
+    transition: transform 1s ease-out;
+}
+
+#dot-grid {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 1;
+
+    /* Repeating dots pattern */
+    background-image: radial-gradient(rgba(255, 255, 255, 0.22) 1.5px, transparent 1.5px);
+    background-size: 24px 24px;
+
+    /* Lets the glowing light underneath illuminate the dots */
+    mix-blend-mode: overlay;
+}
+
+.spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+    display: inline-block;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Disabled styling while searching */
+#submitBtn:disabled {
+    cursor: not-allowed;
+    opacity: 0.85;
+}
+
