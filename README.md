@@ -49,7 +49,7 @@ A modern web browser with JavaScript ES6+ support (Chrome, Firefox, Safari, Edge
 
 ### Installation & Running
 
-NOTE: You can directly use ConnectPeople via (snoob122.github.io/ConnectPeople/). If you want to run it locally follow the steps below:
+NOTE: You can directly use ConnectPeople via [snoob122.github.io/ConnectPeople/](snoob122.github.io/ConnectPeople/). Otherwise if you want to run it locally follow the steps below:
 
 1. Clone the repository:
    ```bash
