@@ -67,7 +67,7 @@ A modern web browser with JavaScript ES6+ support (Chrome, Firefox, Safari, Edge
 ## Usage
 
 1. Enter a starting name in the **Start Person** input (e.g., `Beyonce`, `John Cena`).
-2. Enter a target name in the **Target Person** input (e.g., `Trump`, `Ho Chi Minh`).
+2. Enter a target name in the **Target Person** input (e.g., `Trump`, `Michael Jackson`).
 3. Click **Connect**.
 4. Monitor the real-time request counter, elapsed time timer, and activity log.
 5. Click any card in the generated path to open that person's Wikipedia page in a new tab.
