@@ -1,116 +1,129 @@
 console.log("Hello there! What you doing here?");
 
+// --- DOM Elements ---
+const domElements = {
+    startInput: document.getElementById("startNode"),
+    endInput: document.getElementById("endNode"),
+    submitBtn: document.getElementById("submitBtn"),
+    statusTag: document.getElementById("statusTag"),
+    logField: document.getElementById("logField"),
+    timeTag: document.getElementById("timeTag"),
+    requestTag: document.getElementById("requestTag"),
+    pathContainer: document.getElementById("pathDisplay"),
+    followerGlow: document.getElementById("glowDiv")
+};
+
+// --- Constants & State ---
+const API = {
+    BASE_URL: "https://en.wikipedia.org/w/api.php",
+    DEFAULT_PARAMS: `action=query&format=json&origin=*&redirects=1`
+};
+
+// Regex to aggressively filter out obvious non-human Wikipedia titles before making API calls
+const NON_HUMAN_PATTERN = /\b(album|song|film|band|soundtrack|season|discography|tour|awards?|records?|university|county|school|dynasty|battle|treaty|elections?|presidency|administration|cabinet|politics|history|geography|discography|videography|list of)\b|\d{4}|^\d+$|\(.*(album\vert{}film\vert{}song\vert{}single\vert{}band\vert{}soundtrack\vert{}season\vert{}episode\vert{}TV series\vert{}novel\vert{}EP\vert{}company\vert{}record label\vert{}musical).*\)$/i;
+
+// AIMD (Additive Increase / Multiplicative Decrease) state for dynamic concurrency control
+const aimdState = { limit: 8, max: 20 };
+const humanCache = new Map();
+let globalRequestCounter = 0;
+
+// --- Utility Functions ---
+
+// Pauses execution for a specified number of milliseconds
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-const startNode = document.getElementById("startNode");
-const endNode = document.getElementById("endNode");
-const submitBtn = document.getElementById("submitBtn");
-
-const statusTag = document.getElementById("statusTag");
-const logField = document.getElementById("logField");
-const timeTag = document.getElementById("timeTag");
-const requestTag = document.getElementById("requestTag");
-
-const container = document.getElementById("pathDisplay");
-
-// MediaWiki API Constants
-const BASE_URL = "https://en.wikipedia.org/w/api.php";
-const BASE_ACTION = "query";
-const BASE_FORMAT = "json";
-const BASE_ORIGIN = "*";
-
-const NON_HUMAN_REGEX = /\b(album|song|film|band|soundtrack|season|discography|tour|awards?|records?|university|county|school|dynasty|battle|treaty|elections?|presidency|administration|cabinet|politics|history|geography|discography|videography|list of)\b|\d{4}|^\d+$|\(.*(album|film|song|single|band|soundtrack|season|episode|TV series|novel|EP|company|record label|musical).*\)$/i;
-
-const aimdState = { limit: 8, max: 20 };
-
-function couldBeHuman(title) {
-    if (!title || typeof title !== "string") return false;
-    return !NON_HUMAN_REGEX.test(title);
+// Updates the UI tracker for API requests made
+function updateRequestCounter(reset = false) {
+    globalRequestCounter = reset ? 0 : globalRequestCounter + 1;
+    domElements.requestTag.innerHTML = `Requests Made: <strong>${globalRequestCounter}</strong>`;
 }
 
+// Updates the UI status text
+function setStatus(statusMessage) {
+    domElements.statusTag.innerHTML = `Status: <strong>${statusMessage}</strong>`;
+}
+
+// Checks if a specific Wikipedia category string indicates a human entity
+function isPersonCategory(title) {
+    return title.includes("Category:Living people") || 
+           /Category:\d{4} births/.test(title) || 
+           /Category:\d{4} deaths/.test(title);
+}
+
+// Scans an array of Wikipedia categories for human indicators
+function checkCategoriesForHuman(categories) {
+    if (!categories) return false;
+    return categories.some(cat => isPersonCategory(cat.title));
+}
+
+// Quickly filters out obvious non-human titles using Regex
+function couldBeHuman(title) {
+    return (title && typeof title === "string") ? !NON_HUMAN_PATTERN.test(title) : false;
+}
+
+// --- Network & Concurrency ---
+
+// Fetches data from MediaWiki, featuring AIMD congestion control to maximize throughput
 async function fetchWithRetry(url, maxRetries = 6, initialDelay = 2000) {
     let delay = initialDelay;
     
     for (let i = 0; i < maxRetries; i++) {
         const response = await fetch(url);
-        incRequestCounter();
+        updateRequestCounter();
         
         if (response.ok) {
-            // Additive Increase: +0.1 per successful request (+1 limit per 10 requests)
+            // Additive Increase: Gradually scale up concurrency on successful requests (+1 thread per 10 successes)
             aimdState.limit = Math.min(aimdState.max, aimdState.limit + 0.1);
             return response.json();
         }
         
         if (response.status === 429) {
             console.warn(`Rate limit hit (429). Retrying in ${delay}ms...`);
-            // Multiplicative Decrease: Halve the concurrency immediately
+            // Multiplicative Decrease: Instantly halve concurrency to shed load and avoid cascading timeouts
             aimdState.limit = Math.max(1, Math.floor(aimdState.limit / 2));
-            
             await sleep(delay);
-            delay *= 2;
+            delay *= 2; // Exponential backoff for the retry delay
             continue;
         }
-        
         throw new Error(`HTTP Error: ${response.status}`);
     }
-    
     throw new Error("Max retries reached due to rate limiting.");
 }
 
-let globalRequestCounter = 0;
+// Executes a set of promises concurrently, dynamically throttling based on aimdState
+async function asyncPool(items, iteratorFn) {
+    const results = [];
+    const executing = new Set();
 
-function incRequestCounter(){
-    globalRequestCounter++;
+    for (const item of items) {
+        const promise = Promise.resolve().then(() => iteratorFn(item));
+        results.push(promise);
+        executing.add(promise);
 
-    requestTag.innerHTML = `Requests Made: <strong>${globalRequestCounter}</strong>`;
-}
+        const clean = () => executing.delete(promise);
+        promise.then(clean, clean);
 
-function resetRequestCounter(){
-    globalRequestCounter = -1;
-
-    incRequestCounter();
-}
-
-function setStatus(status){
-    statusTag.innerHTML = `Status: <strong>${status}</strong>`;
-}
-
-// Global cache for verified human entities
-const humanCache = new Map();
-
-// 1 single API call to verify if a single title is human
-async function verifyIsHuman(title) {
-    if (humanCache.has(title)) {
-        return humanCache.get(title);
+        // Dynamically throttle: Promise.race pauses the loop until at least one active request finishes
+        while (executing.size >= Math.floor(aimdState.limit)) {
+            await Promise.race(executing);
+        }
     }
+    return Promise.all(results);
+}
 
-    const enc = encodeURIComponent(title);
-    const uri = `${BASE_URL}?action=${BASE_ACTION}&titles=${enc}&prop=categories&cllimit=500&format=${BASE_FORMAT}&origin=${BASE_ORIGIN}&redirects=1`;
+// --- Wikipedia API Interactions ---
+
+// Makes a single Wikipedia API call to check a title's categories, caching the result
+async function verifyIsHuman(title) {
+    if (humanCache.has(title)) return humanCache.get(title);
+
+    const uri = `${API.BASE_URL}?${API.DEFAULT_PARAMS}&titles=${encodeURIComponent(title)}&prop=categories&cllimit=500`;
 
     try {
         const data = await fetchWithRetry(uri);
-        if (!data.query || !data.query.pages) {
-            humanCache.set(title, false);
-            return false;
-        }
-
-        const page = Object.values(data.query.pages)[0];
-        if (!page.categories) {
-            humanCache.set(title, false);
-            return false;
-        }
-
-        let isHuman = false;
-        for (let i = 0; i < page.categories.length; i++) {
-            const cat = page.categories[i].title;
-            if (cat.includes("Category:Living people") || 
-                /Category:\d{4} births/.test(cat) || 
-                /Category:\d{4} deaths/.test(cat)) {
-                isHuman = true;
-                break;
-            }
-        }
-
+        const page = data.query?.pages ? Object.values(data.query.pages)[0] : null;
+        const isHuman = page ? checkCategoriesForHuman(page.categories) : false;
+        
         humanCache.set(title, isHuman);
         return isHuman;
     } catch (err) {
@@ -119,120 +132,22 @@ async function verifyIsHuman(title) {
     }
 }
 
-// Fetch ALL raw outgoing links with full pagination (no filtering) - allowing for lazy verification
-async function fetchRawForwardLinks(title) {
-    const enc = encodeURIComponent(title);
-    let uri = `${BASE_URL}?action=${BASE_ACTION}&titles=${enc}&prop=links&pllimit=500&plnamespace=0&format=${BASE_FORMAT}&origin=${BASE_ORIGIN}&redirects=1`;
-    const links = [];
-
-    while (uri) {
-        try {
-            const data = await fetchWithRetry(uri);
-            if (!data.query || !data.query.pages) break;
-
-            const page = Object.values(data.query.pages)[0];
-            if (page.links) {
-                for (let i = 0; i < page.links.length; i++) {
-                    links.push(page.links[i].title);
-                }
-            }
-
-            if (data.continue && data.continue.plcontinue) {
-                uri = `${BASE_URL}?action=${BASE_ACTION}&titles=${enc}&prop=links&pllimit=500&plnamespace=0&format=${BASE_FORMAT}&origin=${BASE_ORIGIN}&redirects=1&plcontinue=${encodeURIComponent(data.continue.plcontinue)}`;
-                await sleep(50);
-            } else {
-                uri = null;
-            }
-        } catch (err) {
-            console.error("Error fetching outgoing links:", err);
-            break;
-        }
-    }
-    return links;
-}
-
-// Fetch ALL raw inbound links with full pagination (no filtering)
-async function fetchRawBackwardLinks(title) {
-    const enc = encodeURIComponent(title);
-    let uri = `${BASE_URL}?action=${BASE_ACTION}&titles=${enc}&prop=linkshere&lhlimit=500&lhnamespace=0&format=${BASE_FORMAT}&origin=${BASE_ORIGIN}&redirects=1`;
-    const links = [];
-
-    while (uri) {
-        try {
-            const data = await fetchWithRetry(uri);
-            if (!data.query || !data.query.pages) break;
-
-            const page = Object.values(data.query.pages)[0];
-            if (page.linkshere) {
-                for (let i = 0; i < page.linkshere.length; i++) {
-                    links.push(page.linkshere[i].title);
-                }
-            }
-
-            if (data.continue && data.continue.lhcontinue) {
-                uri = `${BASE_URL}?action=${BASE_ACTION}&titles=${enc}&prop=linkshere&lhlimit=500&lhnamespace=0&format=${BASE_FORMAT}&origin=${BASE_ORIGIN}&redirects=1&lhcontinue=${encodeURIComponent(data.continue.lhcontinue)}`;
-                await sleep(50);
-            } else {
-                uri = null;
-            }
-        } catch (err) {
-            console.error("Error fetching inbound links:", err);
-            break;
-        }
-    }
-    return links;
-}
-
-async function asyncPool(items, iteratorFn) {
-    const results = [];
-    const executing = new Set();
-
-    for (const item of items) {
-        const p = Promise.resolve().then(() => iteratorFn(item));
-        results.push(p);
-        executing.add(p);
-
-        const clean = () => executing.delete(p);
-        p.then(clean, clean);
-
-        // Dynamically throttle based on current AIMD state
-        while (executing.size >= Math.floor(aimdState.limit)) {
-            await Promise.race(executing);
-        }
-    }
-
-    return Promise.all(results);
-}
-
-// Bulk verifies up to 50 nodes in 1 HTTP call
+// Groups unverified titles into chunks of 50 to minimize API requests during validation
 async function verifyHumansBulk(titles) {
     const unverified = titles.filter(t => !humanCache.has(t));
     if (unverified.length === 0) return;
 
     for (let i = 0; i < unverified.length; i += 50) {
         const batch = unverified.slice(i, i + 50);
-        const joined = batch.map(encodeURIComponent).join('|');
-        const uri = `${BASE_URL}?action=${BASE_ACTION}&titles=${joined}&prop=categories&cllimit=500&format=${BASE_FORMAT}&origin=${BASE_ORIGIN}&redirects=1`;
+        const joinedTitles = batch.map(encodeURIComponent).join('|');
+        const uri = `${API.BASE_URL}?${API.DEFAULT_PARAMS}&titles=${joinedTitles}&prop=categories&cllimit=500`;
 
         try {
             const data = await fetchWithRetry(uri);
-            if (!data.query || !data.query.pages) continue;
+            if (!data.query?.pages) continue;
 
-            const pages = Object.values(data.query.pages);
-            for (const page of pages) {
-                let isHuman = false;
-                if (page.categories) {
-                    for (const cat of page.categories) {
-                        const title = cat.title;
-                        if (title.includes("Category:Living people") || 
-                            /Category:\d{4} births/.test(title) || 
-                            /Category:\d{4} deaths/.test(title)) {
-                            isHuman = true;
-                            break;
-                        }
-                    }
-                }
-                humanCache.set(page.title, isHuman);
+            for (const page of Object.values(data.query.pages)) {
+                humanCache.set(page.title, checkCategoriesForHuman(page.categories));
             }
         } catch (err) {
             console.error("Bulk validation error:", err);
@@ -240,90 +155,111 @@ async function verifyHumansBulk(titles) {
     }
 }
 
+// Fetches all incoming or outgoing links for a given title, handling MediaWiki's pagination
+async function fetchLinks(title, isForward) {
+    const encTitle = encodeURIComponent(title);
+    const prop = isForward ? 'links' : 'linkshere';
+    const limitProp = isForward ? 'pllimit' : 'lhlimit';
+    const nsProp = isForward ? 'plnamespace' : 'lhnamespace';
+    const contProp = isForward ? 'plcontinue' : 'lhcontinue';
+
+    let uri = `${API.BASE_URL}?${API.DEFAULT_PARAMS}&titles=${encTitle}&prop=${prop}&${limitProp}=500&${nsProp}=0`;
+    const results = [];
+
+    while (uri) {
+        try {
+            const data = await fetchWithRetry(uri);
+            if (!data.query?.pages) break;
+
+            const page = Object.values(data.query.pages)[0];
+            const items = page[prop];
+            if (items) {
+                for (const item of items) results.push(item.title);
+            }
+
+            // Handle pagination: Wikipedia returns a 'continue' token if there are more than 500 links
+            if (data.continue?.[contProp]) {
+                const continueToken = encodeURIComponent(data.continue[contProp]);
+                uri = `${API.BASE_URL}?${API.DEFAULT_PARAMS}&titles=${encTitle}&prop=${prop}&${limitProp}=500&${nsProp}=0&${contProp}=${continueToken}`;
+                await sleep(50);
+            } else {
+                uri = null;
+            }
+        } catch (err) {
+            console.error(`Error fetching ${isForward ? 'outgoing' : 'inbound'} links:`, err);
+            break;
+        }
+    }
+    return results;
+}
+
+// --- Core Algorithm ---
+
+// Finds the shortest path using a Bidirectional Breadth-First Search to radically reduce the branching factor
 async function bidirectionalBfsShortestPath(start, end) {
     if (start === end) return [start];
 
-    // Initialize root nodes in cache
     humanCache.set(start, true);
     humanCache.set(end, true);
 
-    // Frontier maps: Map<Title, PathArray>
     let forwardFrontier = new Map([[start, [start]]]);
     let backwardFrontier = new Map([[end, [end]]]);
-
     const forwardVisited = new Map([[start, [start]]]);
     const backwardVisited = new Map([[end, [end]]]);
 
-    let maxAPIRequests = 2000;
+    const maxAPIRequests = 2000;
     let requestMade = 0;
 
-    const CONCURRENCY_LIMIT = 2;
-
     while (forwardFrontier.size > 0 && backwardFrontier.size > 0 && requestMade < maxAPIRequests) {
-        // Expand the smaller frontier first to control branching factor
+        // Optimization: Always expand the smaller frontier to control exponential growth
         const expandForward = forwardFrontier.size <= backwardFrontier.size;
         const currentFrontier = expandForward ? forwardFrontier : backwardFrontier;
         const nextFrontier = new Map();
 
-        // 1. Gather nodes needing validation
-        const nodesToValidate = Array.from(currentFrontier.keys())
-            .filter(node => node !== start && node !== end && !humanCache.has(node));
-
+        // 1. Verify unverified nodes in bulk
+        const unverifiedNodes = Array.from(currentFrontier.keys()).filter(node => node !== start && node !== end && !humanCache.has(node));
         const validationBatches = [];
-        for (let i = 0; i < nodesToValidate.length; i += 50) {
-            validationBatches.push(nodesToValidate.slice(i, i + 50));
+        for (let i = 0; i < unverifiedNodes.length; i += 50) {
+            validationBatches.push(unverifiedNodes.slice(i, i + 50));
         }
 
-        // Parallelize bulk verification
         await asyncPool(validationBatches, async (batch) => {
             if (requestMade >= maxAPIRequests) return;
             await verifyHumansBulk(batch);
             requestMade++;
         });
 
-        // 2. Filter candidates down to verified humans
-        const validCandidates = Array.from(currentFrontier.entries()).filter(([curNode]) => {
-            if (curNode === start || curNode === end) return true;
-            return humanCache.get(curNode) === true;
-        });
-
+        // 2. Expand only verified human nodes
+        const verifiedCandidates = Array.from(currentFrontier.entries()).filter(([node]) => humanCache.get(node) === true);
         let earlyReturnPath = null;
 
-        // 3. Expand valid frontier nodes concurrently
-        await asyncPool(validCandidates, async ([curNode, curPath]) => {
+        await asyncPool(verifiedCandidates, async ([curNode, curPath]) => {
             if (requestMade >= maxAPIRequests || earlyReturnPath) return;
 
-            logField.innerHTML = `Log: Expanding: ${curNode} (${expandForward ? "Forward" : "Backward"})`;
-
-            const rawNeighbors = expandForward 
-                ? await fetchRawForwardLinks(curNode) 
-                : await fetchRawBackwardLinks(curNode);
+            domElements.logField.innerHTML = `Log: Expanding: ${curNode} (${expandForward ? "Forward" : "Backward"})`;
+            const rawNeighbors = await fetchLinks(curNode, expandForward);
             requestMade++;
 
-            for (let i = 0; i < rawNeighbors.length; i++) {
+            for (const neighbor of rawNeighbors) {
                 if (earlyReturnPath) break;
-                const neighbor = rawNeighbors[i];
-
-                if (!couldBeHuman(neighbor) && neighbor !== start && neighbor !== end) {
-                    continue;
-                }
+                if (!couldBeHuman(neighbor) && neighbor !== start && neighbor !== end) continue;
 
                 const opposingVisited = expandForward ? backwardVisited : forwardVisited;
 
-                // Intersection detected
+                // Intersection detected: A node from one side connected to a node already visited by the other side
                 if (opposingVisited.has(neighbor)) {
-                    let bridgeIsHuman = humanCache.get(neighbor);
-                    if (bridgeIsHuman === undefined) {
-                        bridgeIsHuman = await verifyIsHuman(neighbor);
+                    let isBridgeHuman = humanCache.get(neighbor);
+                    if (isBridgeHuman === undefined) {
+                        isBridgeHuman = await verifyIsHuman(neighbor);
                         requestMade++;
                     }
 
-                    if (bridgeIsHuman) {
+                    if (isBridgeHuman) {
                         const pathStart = expandForward ? [...curPath, neighbor] : opposingVisited.get(neighbor);
                         const pathEnd = expandForward ? opposingVisited.get(neighbor) : [...curPath, neighbor];
-
-                        const reversedEnd = [...pathEnd].reverse().slice(1);
-                        earlyReturnPath = [...pathStart, ...reversedEnd];
+                        
+                        // Merge the paths. If expanding forward, pathEnd is reversed and the duplicate bridge node (index 0) is sliced off.
+                        earlyReturnPath = [...pathStart, ...[...pathEnd].reverse().slice(1)];
                         return;
                     }
                 }
@@ -337,9 +273,7 @@ async function bidirectionalBfsShortestPath(start, end) {
             }
         });
 
-        if (earlyReturnPath) {
-            return earlyReturnPath;
-        }
+        if (earlyReturnPath) return earlyReturnPath;
 
         if (expandForward) {
             forwardFrontier = nextFrontier;
@@ -348,174 +282,119 @@ async function bidirectionalBfsShortestPath(start, end) {
         }
     }
 
-    if (requestMade >= maxAPIRequests){
-        return "Request Limit Reached!";
-    }else{
-        return "Path Not Found!";
-    }
+    return requestMade >= maxAPIRequests ? "Request Limit Reached!" : "Path Not Found!";
 }
 
-function formatResult(resultJSON){
-    console.log(resultJSON);
-    const resultArr = Object.values(resultJSON);
+// --- UI & Rendering ---
 
-    if (resultArr.length == 0){
-        return ``;
-    }
-
-    let formattedResult = `${resultArr[0]}`;
-
-    for (let i = 1; i < resultArr.length; i++){
-        formattedResult += ` -> ${resultArr[i]}`;
-    }
-
-    return formattedResult;
-}
-
-function clearCard(){
-    container.replaceChildren();
-}
-
-submitBtn.addEventListener("click", async () => {
-    clearCard();
-    setStatus("Finding");
-    resetRequestCounter();
-    
-    const startTime = performance.now();
-    
-    const start = startNode.value.trim();
-    const end = endNode.value.trim();
-
-    submitBtn.disabled = true;
-    submitBtn.innerHTML = `<span class="spinner"></span>`;
-
-    statusTag.innerHTML = `Status: <strong>Searching...</strong>`;
-    logField.innerHTML = `Log: Initializing...`;
-
-    const timerInterval = setInterval(() => {
-        const elapsed = (performance.now() - startTime) / 1000;
-        timeTag.innerHTML = `Elapsed Time: <strong>${elapsed.toFixed(2)}s</strong>`;
-    }, 50);
-    
-    try {
-
-        const isValidStart = await verifyIsHuman(start);
-        const isValidEnd = await verifyIsHuman(end);
-
-        if (!isValidStart || !isValidEnd){
-            setStatus(`Failed! Provided names are not available!`);
-            throw new Error("Provided names do not exist!");
-        }
-
-        const result = await bidirectionalBfsShortestPath(start, end);
-
-        if (result == "Path not found or request limit reached."){
-            throw new Error(result);
-        }
-        renderPathCards(result);
-
-        setStatus(`Success!`);
-    } catch (error) {
-        console.error("Execution error:", error);
-        setStatus(`Failed! ${error}`);
-    } finally{
-        clearInterval(timerInterval);
-        const finalElapsed = ((performance.now() - startTime) / 1000).toFixed(2);
-        timeTag.innerHTML = `Elapsed Time: <strong>${finalElapsed}s</strong>`;
-        
-        submitBtn.disabled = false;
-        submitBtn.innerHTML = `Connect`;
-    }
-
-    logField.innerHTML = `Log: Idle`;
-});
-
+// Fetches thumbnails in bulk and generates the visual UI cards for the final path
 async function renderPathCards(pathArray) {
-    const container = document.getElementById("pathDisplay");
-    container.innerHTML = "";
-
+    domElements.pathContainer.innerHTML = "";
     const DEFAULT_AVATAR = "https://upload.wikimedia.org/wikipedia/commons/7/7c/Profile_avatar_placeholder_large.png";
-
-    // Batch-query all thumbnails in one single request
     const titlesParam = pathArray.map(encodeURIComponent).join("|");
-    const uri = `https://en.wikipedia.org/w/api.php?action=query&titles=${titlesParam}&prop=pageimages&pithumbsize=300&format=json&origin=*&redirects=1`;
-
+    const uri = `${API.BASE_URL}?action=query&titles=${titlesParam}&prop=pageimages&pithumbsize=300&format=json&origin=*&redirects=1`;
     const thumbnailMap = new Map();
 
     try {
         const res = await fetch(uri);
         const data = await res.json();
 
-        if (data.query && data.query.pages) {
-            const pages = Object.values(data.query.pages);
-            for (const p of pages) {
-                if (p.thumbnail && p.thumbnail.source) {
-                    thumbnailMap.set(p.title.toLowerCase(), p.thumbnail.source);
-                }
+        if (data.query?.pages) {
+            for (const p of Object.values(data.query.pages)) {
+                if (p.thumbnail?.source) thumbnailMap.set(p.title.toLowerCase(), p.thumbnail.source);
             }
-
-            // Map normalized and redirect aliases
-            if (data.query.normalized) {
-                for (const norm of data.query.normalized) {
-                    const src = thumbnailMap.get(norm.to.toLowerCase());
-                    if (src) thumbnailMap.set(norm.from.toLowerCase(), src);
+            
+            // Map thumbnails across redirects and API normalizations (e.g., lowercase to Title Case)
+            ['normalized', 'redirects'].forEach(type => {
+                if (data.query[type]) {
+                    for (const item of data.query[type]) {
+                        const src = thumbnailMap.get(item.to.toLowerCase());
+                        if (src) thumbnailMap.set(item.from.toLowerCase(), src);
+                    }
                 }
-            }
-            if (data.query.redirects) {
-                for (const red of data.query.redirects) {
-                    const src = thumbnailMap.get(red.to.toLowerCase());
-                    if (src) thumbnailMap.set(red.from.toLowerCase(), src);
-                }
-            }
+            });
         }
     } catch (e) {
         console.error("Failed to batch-fetch thumbnails:", e);
     }
 
-    // Render cards
-    for (let i = 0; i < pathArray.length; i++) {
-        const title = pathArray[i];
+    pathArray.forEach((title, index) => {
         const imgUrl = thumbnailMap.get(title.toLowerCase()) || DEFAULT_AVATAR;
         const wikiUrl = `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/\s+/g, "_"))}`;
 
-        // Create card as an anchor tag linking to Wikipedia
         const card = document.createElement("a");
         card.className = "person-card";
         card.href = wikiUrl;
         card.target = "_blank";
         card.rel = "noopener noreferrer";
-        card.innerHTML = `
-            <img class="person-avatar" src="${imgUrl}" alt="${title}">
-            <div class="person-name">${title}</div>
-        `;
-        container.appendChild(card);
+        card.innerHTML = `<img class="person-avatar" src="${imgUrl}" alt="${title}"><div class="person-name">${title}</div>`;
+        domElements.pathContainer.appendChild(card);
 
-        if (i < pathArray.length - 1) {
+        if (index < pathArray.length - 1) {
             const arrow = document.createElement("div");
             arrow.className = "arrow-separator";
             arrow.innerHTML = "→";
-            container.appendChild(arrow);
+            domElements.pathContainer.appendChild(arrow);
         }
+    });
+}
+
+// Orchestrates the search process, handling UI states, validation, and algorithm execution
+async function handleSearchSubmit() {
+    domElements.pathContainer.replaceChildren();
+    setStatus("Finding");
+    updateRequestCounter(true);
+    
+    const startTime = performance.now();
+    const start = domElements.startInput.value.trim();
+    const end = domElements.endInput.value.trim();
+
+    domElements.submitBtn.disabled = true;
+    domElements.submitBtn.innerHTML = `<span class="spinner"></span>`;
+    setStatus("Searching...");
+    domElements.logField.innerHTML = `Log: Initializing...`;
+
+    const timerInterval = setInterval(() => {
+        domElements.timeTag.innerHTML = `Elapsed Time: <strong>${((performance.now() - startTime) / 1000).toFixed(2)}s</strong>`;
+    }, 50);
+    
+    try {
+        const [isValidStart, isValidEnd] = await Promise.all([verifyIsHuman(start), verifyIsHuman(end)]);
+
+        if (!isValidStart || !isValidEnd) {
+            throw new Error("Provided names do not exist or are not valid humans!");
+        }
+
+        const result = await bidirectionalBfsShortestPath(start, end);
+        if (typeof result === "string") throw new Error(result);
+        
+        await renderPathCards(result);
+        setStatus("Success!");
+    } catch (error) {
+        console.error("Execution error:", error);
+        setStatus(`Failed! ${error.message}`);
+    } finally {
+        clearInterval(timerInterval);
+        domElements.timeTag.innerHTML = `Elapsed Time: <strong>${((performance.now() - startTime) / 1000).toFixed(2)}s</strong>`;
+        domElements.submitBtn.disabled = false;
+        domElements.submitBtn.innerHTML = `Connect`;
+        domElements.logField.innerHTML = `Log: Idle`;
     }
 }
 
-const follower = document.getElementById("glowDiv");
+domElements.submitBtn.addEventListener("click", handleSearchSubmit);
+
+// --- Visual Effects & Autocomplete ---
 
 window.addEventListener('mousemove', (e) => {
-  // Update the element's position using pixel values
-  follower.style.left = e.clientX + 'px';
-  follower.style.top = e.clientY + 'px';
+    domElements.followerGlow.style.left = `${e.clientX}px`;
+    domElements.followerGlow.style.top = `${e.clientY}px`;
 });
 
-window.addEventListener("mousedown", () => {
-    follower.classList.add("active");
-});
+window.addEventListener("mousedown", () => domElements.followerGlow.classList.add("active"));
+window.addEventListener("mouseup", () => domElements.followerGlow.classList.remove("active"));
 
-window.addEventListener("mouseup", () => {
-    follower.classList.remove("active");
-});
-
-// Debounce helper to limit API calls while typing
+// Delays function execution until after a specified wait time to prevent spamming the API on every keystroke
 function debounce(fn, delay = 250) {
     let timer;
     return (...args) => {
@@ -524,73 +403,49 @@ function debounce(fn, delay = 250) {
     };
 }
 
-// Fetches 5-6 title suggestions using OpenSearch
+// Queries the OpenSearch API for autocomplete candidates and filters them to verified humans
 async function fetchTextSuggestions(query) {
     if (!query) return [];
-    const uri = `${BASE_URL}?action=opensearch&search=${encodeURIComponent(query)}&limit=10&namespace=0&format=json&origin=*`;
+    const uri = `${API.BASE_URL}?action=opensearch&search=${encodeURIComponent(query)}&limit=10&namespace=0&format=json&origin=*`;
     
     try {
         const res = await fetch(uri);
         const searchData = await res.json();
         const candidateTitles = Array.isArray(searchData[1]) ? searchData[1] : [];
-
         if (candidateTitles.length === 0) return [];
 
-        // Check local cache first; filter only unknown titles
         const titlesToVerify = candidateTitles.filter(t => !humanCache.has(t));
-
         if (titlesToVerify.length > 0) {
             const joined = titlesToVerify.map(encodeURIComponent).join('|');
-            const verifyUri = `${BASE_URL}?action=${BASE_ACTION}&titles=${joined}&prop=categories&cllimit=500&format=${BASE_FORMAT}&origin=${BASE_ORIGIN}&redirects=1`;
+            const verifyUri = `${API.BASE_URL}?${API.DEFAULT_PARAMS}&titles=${joined}&prop=categories&cllimit=500`;
 
             const catRes = await fetch(verifyUri);
             const catData = await catRes.json();
 
-            if (catData.query && catData.query.pages) {
-                const pages = Object.values(catData.query.pages);
-                for (const page of pages) {
-                    let isHuman = false;
-                    if (page.categories) {
-                        for (const cat of page.categories) {
-                            const catTitle = cat.title;
-                            if (catTitle.includes("Category:Living people") || 
-                                /Category:\d{4} births/.test(catTitle) || 
-                                /Category:\d{4} deaths/.test(catTitle)) {
-                                isHuman = true;
-                                break;
-                            }
+            if (catData.query?.pages) {
+                for (const page of Object.values(catData.query.pages)) {
+                    humanCache.set(page.title, checkCategoriesForHuman(page.categories));
+                }
+                
+                ['normalized', 'redirects'].forEach(type => {
+                    if (catData.query[type]) {
+                        for (const item of catData.query[type]) {
+                            humanCache.set(item.from, humanCache.get(item.to) || false);
                         }
                     }
-                    humanCache.set(page.title, isHuman);
-                }
-
-                // Handle redirects and normalization mappings
-                if (catData.query.normalized) {
-                    for (const norm of catData.query.normalized) {
-                        humanCache.set(norm.from, humanCache.get(norm.to) || false);
-                    }
-                }
-                if (catData.query.redirects) {
-                    for (const red of catData.query.redirects) {
-                        humanCache.set(red.from, humanCache.get(red.to) || false);
-                    }
-                }
+                });
             }
         }
-
-        // Return only confirmed humans, up to 6 results
-        return candidateTitles
-            .filter(title => humanCache.get(title) === true)
-            .slice(0, 6);
+        return candidateTitles.filter(title => humanCache.get(title) === true).slice(0, 6);
     } catch (err) {
         console.error("Suggestion error:", err);
         return [];
     }
 }
 
+// Renders the autocomplete dropdown list
 function renderTextSuggestions(titles, dropdown, input) {
     dropdown.innerHTML = "";
-    
     if (titles.length === 0) {
         dropdown.classList.remove("active");
         return;
@@ -600,19 +455,16 @@ function renderTextSuggestions(titles, dropdown, input) {
         const item = document.createElement("div");
         item.className = "suggestion-item";
         item.textContent = title;
-
-        // Use mousedown to resolve before input blur fires
         item.addEventListener("mousedown", () => {
             input.value = title;
             dropdown.classList.remove("active");
         });
-
         dropdown.appendChild(item);
     });
-
     dropdown.classList.add("active");
 }
 
+// Attaches event listeners for input, focus, and blur to handle the autocomplete UI logic
 function bindAutocomplete(inputId, dropdownId) {
     const input = document.getElementById(inputId);
     const dropdown = document.getElementById(dropdownId);
@@ -623,19 +475,13 @@ function bindAutocomplete(inputId, dropdownId) {
             dropdown.classList.remove("active");
             return;
         }
-
         const titles = await fetchTextSuggestions(query);
         renderTextSuggestions(titles, dropdown, input);
     }, 250));
 
-    input.addEventListener("blur", () => {
-        setTimeout(() => dropdown.classList.remove("active"), 120);
-    });
-
+    input.addEventListener("blur", () => setTimeout(() => dropdown.classList.remove("active"), 120));
     input.addEventListener("focus", () => {
-        if (dropdown.children.length > 0 && input.value.trim().length >= 2) {
-            dropdown.classList.add("active");
-        }
+        if (dropdown.children.length > 0 && input.value.trim().length >= 2) dropdown.classList.add("active");
     });
 }
 
