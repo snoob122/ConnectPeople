@@ -21,6 +21,8 @@ const BASE_ORIGIN = "*";
 
 const NON_HUMAN_REGEX = /\b(album|song|film|band|soundtrack|season|discography|tour|awards?|records?|university|county|school|dynasty|battle|treaty|elections?|presidency|administration|cabinet|politics|history|geography|discography|videography|list of)\b|\d{4}|^\d+$|\(.*(album|film|song|single|band|soundtrack|season|episode|TV series|novel|EP|company|record label|musical).*\)$/i;
 
+const aimdState = { limit: 8, max: 20 };
+
 function couldBeHuman(title) {
     if (!title || typeof title !== "string") return false;
     return !NON_HUMAN_REGEX.test(title);
@@ -34,11 +36,16 @@ async function fetchWithRetry(url, maxRetries = 6, initialDelay = 2000) {
         incRequestCounter();
         
         if (response.ok) {
+            // Additive Increase: +0.1 per successful request (+1 limit per 10 requests)
+            aimdState.limit = Math.min(aimdState.max, aimdState.limit + 0.1);
             return response.json();
         }
         
         if (response.status === 429) {
             console.warn(`Rate limit hit (429). Retrying in ${delay}ms...`);
+            // Multiplicative Decrease: Halve the concurrency immediately
+            aimdState.limit = Math.max(1, Math.floor(aimdState.limit / 2));
+            
             await sleep(delay);
             delay *= 2;
             continue;
@@ -176,7 +183,7 @@ async function fetchRawBackwardLinks(title) {
     return links;
 }
 
-async function asyncPool(limit, items, iteratorFn) {
+async function asyncPool(items, iteratorFn) {
     const results = [];
     const executing = new Set();
 
@@ -188,7 +195,8 @@ async function asyncPool(limit, items, iteratorFn) {
         const clean = () => executing.delete(p);
         p.then(clean, clean);
 
-        if (executing.size >= limit) {
+        // Dynamically throttle based on current AIMD state
+        while (executing.size >= Math.floor(aimdState.limit)) {
             await Promise.race(executing);
         }
     }
@@ -267,7 +275,7 @@ async function bidirectionalBfsShortestPath(start, end) {
         }
 
         // Parallelize bulk verification
-        await asyncPool(CONCURRENCY_LIMIT, validationBatches, async (batch) => {
+        await asyncPool(validationBatches, async (batch) => {
             if (requestMade >= maxAPIRequests) return;
             await verifyHumansBulk(batch);
             requestMade++;
@@ -282,7 +290,7 @@ async function bidirectionalBfsShortestPath(start, end) {
         let earlyReturnPath = null;
 
         // 3. Expand valid frontier nodes concurrently
-        await asyncPool(CONCURRENCY_LIMIT, validCandidates, async ([curNode, curPath]) => {
+        await asyncPool(validCandidates, async ([curNode, curPath]) => {
             if (requestMade >= maxAPIRequests || earlyReturnPath) return;
 
             logField.innerHTML = `Log: Expanding: ${curNode} (${expandForward ? "Forward" : "Backward"})`;
