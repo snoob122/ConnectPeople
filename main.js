@@ -506,3 +506,130 @@ window.addEventListener("mousedown", () => {
 window.addEventListener("mouseup", () => {
     follower.classList.remove("active");
 });
+
+// Debounce helper to limit API calls while typing
+function debounce(fn, delay = 250) {
+    let timer;
+    return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), delay);
+    };
+}
+
+// Fetches 5-6 title suggestions using OpenSearch
+async function fetchTextSuggestions(query) {
+    if (!query) return [];
+    const uri = `${BASE_URL}?action=opensearch&search=${encodeURIComponent(query)}&limit=10&namespace=0&format=json&origin=*`;
+    
+    try {
+        const res = await fetch(uri);
+        const searchData = await res.json();
+        const candidateTitles = Array.isArray(searchData[1]) ? searchData[1] : [];
+
+        if (candidateTitles.length === 0) return [];
+
+        // Check local cache first; filter only unknown titles
+        const titlesToVerify = candidateTitles.filter(t => !humanCache.has(t));
+
+        if (titlesToVerify.length > 0) {
+            const joined = titlesToVerify.map(encodeURIComponent).join('|');
+            const verifyUri = `${BASE_URL}?action=${BASE_ACTION}&titles=${joined}&prop=categories&cllimit=500&format=${BASE_FORMAT}&origin=${BASE_ORIGIN}&redirects=1`;
+
+            const catRes = await fetch(verifyUri);
+            const catData = await catRes.json();
+
+            if (catData.query && catData.query.pages) {
+                const pages = Object.values(catData.query.pages);
+                for (const page of pages) {
+                    let isHuman = false;
+                    if (page.categories) {
+                        for (const cat of page.categories) {
+                            const catTitle = cat.title;
+                            if (catTitle.includes("Category:Living people") || 
+                                /Category:\d{4} births/.test(catTitle) || 
+                                /Category:\d{4} deaths/.test(catTitle)) {
+                                isHuman = true;
+                                break;
+                            }
+                        }
+                    }
+                    humanCache.set(page.title, isHuman);
+                }
+
+                // Handle redirects and normalization mappings
+                if (catData.query.normalized) {
+                    for (const norm of catData.query.normalized) {
+                        humanCache.set(norm.from, humanCache.get(norm.to) || false);
+                    }
+                }
+                if (catData.query.redirects) {
+                    for (const red of catData.query.redirects) {
+                        humanCache.set(red.from, humanCache.get(red.to) || false);
+                    }
+                }
+            }
+        }
+
+        // Return only confirmed humans, up to 6 results
+        return candidateTitles
+            .filter(title => humanCache.get(title) === true)
+            .slice(0, 6);
+    } catch (err) {
+        console.error("Suggestion error:", err);
+        return [];
+    }
+}
+
+function renderTextSuggestions(titles, dropdown, input) {
+    dropdown.innerHTML = "";
+    
+    if (titles.length === 0) {
+        dropdown.classList.remove("active");
+        return;
+    }
+
+    titles.forEach(title => {
+        const item = document.createElement("div");
+        item.className = "suggestion-item";
+        item.textContent = title;
+
+        // Use mousedown to resolve before input blur fires
+        item.addEventListener("mousedown", () => {
+            input.value = title;
+            dropdown.classList.remove("active");
+        });
+
+        dropdown.appendChild(item);
+    });
+
+    dropdown.classList.add("active");
+}
+
+function bindAutocomplete(inputId, dropdownId) {
+    const input = document.getElementById(inputId);
+    const dropdown = document.getElementById(dropdownId);
+
+    input.addEventListener("input", debounce(async (e) => {
+        const query = e.target.value.trim();
+        if (query.length < 2) {
+            dropdown.classList.remove("active");
+            return;
+        }
+
+        const titles = await fetchTextSuggestions(query);
+        renderTextSuggestions(titles, dropdown, input);
+    }, 250));
+
+    input.addEventListener("blur", () => {
+        setTimeout(() => dropdown.classList.remove("active"), 120);
+    });
+
+    input.addEventListener("focus", () => {
+        if (dropdown.children.length > 0 && input.value.trim().length >= 2) {
+            dropdown.classList.add("active");
+        }
+    });
+}
+
+bindAutocomplete("startNode", "startSuggestions");
+bindAutocomplete("endNode", "endSuggestions");

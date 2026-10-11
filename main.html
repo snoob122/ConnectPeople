@@ -16,9 +16,18 @@
     </header>
 
     <div id="searchCard">
-        <input id="startNode" class="inputTag" type="text" placeholder="Start Person (e.g., Beyonce)" autocomplete="off">
+        <div class="input-wrapper">
+            <input id="startNode" class="inputTag" type="text" placeholder="Start Person (e.g., Beyonce)" autocomplete="off">
+            <div id="startSuggestions" class="suggestions-dropdown"></div>
+        </div>
+        
         <img id="exchangeIcon" src="/Resources/two-arrows-white.png" alt="Arrows">
-        <input id="endNode" class="inputTag" type="text" placeholder="Target Person (e.g., Trump)" autocomplete="off">
+        
+        <div class="input-wrapper">
+            <input id="endNode" class="inputTag" type="text" placeholder="Target Person (e.g., Trump)" autocomplete="off">
+            <div id="endSuggestions" class="suggestions-dropdown"></div>
+        </div>
+        
         <button id="submitBtn">Connect</button>
     </div>
 

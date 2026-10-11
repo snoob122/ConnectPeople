@@ -23,6 +23,7 @@ Wikipedia can be modeled as a directed graph where articles are nodes and hyperl
   - Implements exponential backoff retries via `fetchWithRetry`.
 - **Dynamic Result Cards:** Queries Wikipedia's `prop=pageimages` in a single batch to render avatar cards with names and direct Wikipedia links for every person in the resolved path.
 - **Interactive Dark UI:** Modern glassmorphism layout with live execution telemetry (status, elapsed time, request counter) and an ambient cursor follower that illuminates an overlaid dot grid.
+- **Lightweight Suggestion and Auto-complete System:** The system utilizes wikipedia's openSearch API which allowed for smooth and seamless suggestion/auto-complete system, there is also a debounce system to limit unnecessary API calls while typing.
 
 ---
 
